@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0d14">
+<title>zorn.ai</title>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" async></script>
+<style>
+:root{--bg:#0b0d14;--panel:#141824;--text:#e8eaf2;--muted:#8b91a8;--accent:#7c5cff;--accent2:#00d4ff;--user:#1f2540;--border:#232940}
+@media(prefers-color-scheme:light){:root{--bg:#f6f7fb;--panel:#fff;--text:#161a2b;--muted:#6b7190;--user:#e9e6ff;--border:#e1e4f0}}
+*{box-sizing:border-box}html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--text);font:16px/1.55 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;display:flex;flex-direction:column}
+.logo{font-weight:800;font-size:22px;background:linear-gradient(90deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;color:transparent}
+header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;padding-top:calc(12px + env(safe-area-inset-top,0px));border-bottom:1px solid var(--border);background:var(--panel)}
+#userbox{display:flex;align-items:center;gap:10px;font-size:14px;color:var(--muted)}
+#userbox img{width:30px;height:30px;border-radius:50%}
+button{font:inherit;cursor:pointer}
+.ghost{background:none;border:1px solid var(--border);color:var(--text);border-radius:8px;padding:5px 10px}
+#login{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;text-align:center;padding:24px}
+#login h1{margin:0;font-size:44px}#login p{margin:0;color:var(--muted);max-width:340px}
+#app{flex:1;display:none;flex-direction:column;min-height:0}
+#chat{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px}
+.msg{max-width:min(720px,90%);padding:10px 14px;border-radius:16px;white-space:pre-wrap;word-wrap:break-word}
+.user{align-self:flex-end;background:var(--user);border-bottom-right-radius:4px}
+.bot{align-self:flex-start;background:var(--panel);border:1px solid var(--border);border-bottom-left-radius:4px}
+.bot pre{background:#0006;color:#e8eaf2;padding:10px;border-radius:8px;overflow-x:auto;white-space:pre;position:relative}
+.bot code{font-family:ui-monospace,Menlo,monospace;font-size:14px}
+.copy{position:absolute;top:6px;right:6px;font-size:12px;padding:2px 8px;background:#fff2;color:#fff;border:0;border-radius:6px}
+.typing{color:var(--muted)}
+.tag{display:inline-block;background:var(--bg);border:1px solid var(--border);border-radius:999px;padding:1px 10px;font-size:13px;margin:4px 4px 0 0}
+#chips{display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px 0;background:var(--panel);border-top:1px solid var(--border)}
+#chips:empty{display:none}
+#chips .tag{margin:0}#chips .tag b{cursor:pointer;margin-left:6px}
+#bar{display:flex;gap:8px;padding:10px 12px;padding-bottom:calc(10px + env(safe-area-inset-bottom,0px));background:var(--panel);border-top:1px solid var(--border)}
+#chips:not(:empty)+#bar{border-top:0}
+#attach{width:42px;border-radius:12px;border:1px solid var(--border);background:none;color:var(--text);font-size:18px}
+#input{flex:1;resize:none;max-height:140px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:12px;padding:10px 12px;font:inherit}
+#send{background:linear-gradient(135deg,var(--accent),var(--accent2));border:0;color:#fff;border-radius:12px;padding:0 18px;font-weight:700}
+#send:disabled{opacity:.5}
+.empty{margin:auto;text-align:center;color:var(--muted)}
+</style>
+</head>
+<body>
+<header>
+  <span class="logo">zorn.ai</span>
+  <div id="userbox" hidden><img id="avatar" alt=""><span id="uname"></span><button class="ghost" id="newchat">New</button><button class="ghost" id="logout">Logout</button></div>
+</header>
+<section id="login">
+  <h1 class="logo">zorn.ai</h1>
+  <p>Your own AI coding assistant. Sign in with Google to get started.</p>
+  <div id="gbtn"></div>
+</section>
+<section id="app">
+  <div id="chat"></div>
+  <div id="chips"></div>
+  <div id="bar">
+    <button id="attach" title="Attach files or a .zip">📎</button>
+    <input type="file" id="file" multiple hidden>
+    <textarea id="input" rows="1" placeholder="Ask zorn.ai anything..."></textarea>
+    <button id="send">Send</button>
+  </div>
+</section>
+<script>
+const $ = id => document.getElementById(id);
+let token = sessionStorage.getItem("zorn_token") || "", history = [], atts = [];
+const CAP = 24000;                       // max attachment characters sent per message
+const SKIP = /(^|\/)(node_modules|\.git|build|dist|\.gradle|\.idea|__pycache__|\.venv)\//;
+const BIN = /\.(png|jpe?g|gif|webp|ico|pdf|mp3|mp4|mov|so|dll|exe|class|jar|apk|aab|glb|bin|woff2?|ttf|otf|ogg|wav|psd|blend)$/i;
+
+const jwt = t => { try { return JSON.parse(decodeURIComponent(escape(atob(t.split(".")[1].replace(/-/g,"+").replace(/_/g,"/"))))); } catch { return null; } };
+const esc = s => s.replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+function render(t){
+  return esc(t).replace(/```(\w*)\n?([\s\S]*?)```/g,(_,l,c)=>'<pre><button class="copy">Copy</button><code>'+c+'</code></pre>')
+    .replace(/`([^`\n]+)`/g,"<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g,"<b>$1</b>");
+}
+document.addEventListener("click", e => {
+  if (!e.target.classList.contains("copy")) return;
+  const code = e.target.nextElementSibling.textContent;
+  (navigator.clipboard ? navigator.clipboard.writeText(code) : Promise.reject()).then(()=>{e.target.textContent="Copied";setTimeout(()=>e.target.textContent="Copy",1200);}).catch(()=>{});
+});
+
+function welcome(){ $("chat").innerHTML='<div class="empty" id="empty"><h2 class="logo">Hello! 👋</h2>Ask me anything — or attach code files / a .zip with 📎.</div>'; }
+function showApp(){
+  const u = jwt(token); if(!u || u.exp*1000 < Date.now()) return logout();
+  $("login").style.display="none"; $("app").style.display="flex"; $("userbox").hidden=false;
+  $("uname").textContent=u.given_name||u.name||""; $("avatar").src=u.picture||""; if(!$("chat").children.length) welcome();
+}
+function logout(){
+  token=""; sessionStorage.removeItem("zorn_token"); history=[]; atts=[]; drawChips();
+  $("app").style.display="none"; $("login").style.display="flex"; $("userbox").hidden=true; $("chat").innerHTML="";
+  if(window.google&&google.accounts) google.accounts.id.disableAutoSelect();
+}
+$("logout").onclick=logout;
+$("newchat").onclick=()=>{ history=[]; atts=[]; drawChips(); welcome(); };
+
+function addMsg(role,text,names){
+  const e=$("empty"); if(e) e.remove();
+  const d=document.createElement("div"); d.className="msg "+(role==="user"?"user":"bot");
+  if(role==="user"){ d.textContent=text; (names||[]).forEach(n=>{const s=document.createElement("span");s.className="tag";s.textContent="📎 "+n;d.appendChild(document.createElement("br"));d.appendChild(s);}); }
+  else d.innerHTML=render(text);
+  $("chat").appendChild(d); $("chat").scrollTop=$("chat").scrollHeight; return d;
+}
+
+// ---------- attachments ----------
+function drawChips(){
+  $("chips").innerHTML="";
+  atts.forEach((a,i)=>{const s=document.createElement("span");s.className="tag";s.textContent="📎 "+a.label;
+    const x=document.createElement("b");x.textContent="×";x.onclick=()=>{atts.splice(i,1);drawChips();};s.appendChild(x);$("chips").appendChild(s);});
+}
+const looksBinary = s => s.includes("\u0000") || (s.match(/\uFFFD/g)||[]).length > s.length*0.02;
+async function readZip(f){
+  if(!window.JSZip) throw new Error("ZIP reader is still loading, try again in a moment.");
+  if(f.size > 20*1024*1024) throw new Error(f.name+": ZIP is over 20 MB.");
+  const z = await JSZip.loadAsync(f), parts = [];
+  for(const [p,e] of Object.entries(z.files)){
+    if(e.dir || SKIP.test(p) || BIN.test(p)) continue;
+    if(e._data && e._data.uncompressedSize > 500000) continue;
+    const t = await e.async("string"); if(looksBinary(t)) continue;
+    parts.push({name: f.name+":"+p, text: t.slice(0,12000)}); if(parts.length>=40) break;
+  }
+  if(!parts.length) throw new Error(f.name+": no readable text or code files inside.");
+  atts.push({label: f.name+" ("+parts.length+" files)", parts});
+}
+async function readOne(f){
+  if(/\.zip$/i.test(f.name)) return readZip(f);
+  if(BIN.test(f.name) || f.type.startsWith("image/") || f.type.startsWith("audio/") || f.type.startsWith("video/"))
+    throw new Error(f.name+": images, audio, video and binary files aren't supported. Attach text, code or a .zip.");
+  if(f.size > 1024*1024) throw new Error(f.name+": file is over 1 MB.");
+  const t = await f.text(); if(looksBinary(t)) throw new Error(f.name+": looks like a binary file.");
+  atts.push({label:f.name, parts:[{name:f.name, text:t}]});
+}
+$("attach").onclick=()=>$("file").click();
+$("file").onchange=async e=>{
+  for(const f of e.target.files){ try{ await readOne(f); }catch(err){ addMsg("bot","⚠️ "+err.message); } }
+  e.target.value=""; drawChips();
+};
+function buildPrompt(text){
+  let budget=CAP, out=text||"Please review these files and tell me what they do and any problems you see.";
+  for(const a of atts) for(const p of a.parts){
+    if(budget<=0) return out+"\n\n[More files omitted: size limit reached]";
+    const t = p.text.length>budget ? p.text.slice(0,budget)+"\n...[truncated]" : p.text; budget-=t.length;
+    out += "\n\n--- File: "+p.name+" ---\n```\n"+t+"\n```";
+  }
+  return out;
+}
+
+// ---------- chat ----------
+async function send(){
+  const text=$("input").value.trim(); if(!text && !atts.length) return;
+  const names=atts.map(a=>a.label), prompt=buildPrompt(text);
+  $("input").value=""; atts=[]; drawChips(); $("send").disabled=true;
+  addMsg("user",text||"(attachments)",names); history.push({role:"user",content:prompt});
+  const t=addMsg("bot","Thinking…"); t.classList.add("typing");
+  try{
+    const r=await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+token},body:JSON.stringify({messages:history})});
+    const data=await r.json();
+    if(r.status===401){ logout(); return; }
+    if(!r.ok) throw new Error(data.error||"Error");
+    t.classList.remove("typing"); t.innerHTML=render(data.reply); history.push({role:"assistant",content:data.reply});
+  }catch(e){ t.classList.remove("typing"); t.textContent="⚠️ "+e.message; history.pop(); }
+  $("send").disabled=false; $("chat").scrollTop=$("chat").scrollHeight;
+}
+$("send").onclick=send;
+$("input").addEventListener("keydown",e=>{ if(e.key==="Enter"&&!e.shiftKey&&!/Mobi|Android/i.test(navigator.userAgent)){e.preventDefault();send();} });
+
+async function init(){
+  const cfg=await (await fetch("/config")).json();
+  const wait=setInterval(()=>{
+    if(!(window.google&&google.accounts)) return; clearInterval(wait);
+    google.accounts.id.initialize({client_id:cfg.googleClientId,callback:r=>{token=r.credential;sessionStorage.setItem("zorn_token",token);showApp();}});
+    google.accounts.id.renderButton($("gbtn"),{theme:"filled_blue",size:"large",text:"continue_with",shape:"pill"});
+  },100);
+  if(token) showApp();
+}
+init();
+</script>
+</body>
+</html>
